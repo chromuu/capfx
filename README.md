@@ -11,7 +11,7 @@ port of the WebGL shader version; the two agree to within 1/255 outside MPEG qua
 
 - Rust 1.80 or newer (`rustup` from rust-lang.org)
 - `ffmpeg` and `ffprobe` on your PATH (any recent build; used for all media in and out)
-- For the GUI and `play`: a desktop. Linux needs X11 or Wayland; macOS and Windows work as they are.
+- For the GUI and `play`: a desktop. Building on Linux needs the ALSA headers (`libasound2-dev` or `alsa-lib-devel`). Linux needs X11 or Wayland; macOS and Windows work as they are.
 
 ## Build
 
@@ -43,12 +43,15 @@ Open a file with the button, by pasting a path, or by dropping it on the window.
 setting as a slider or toggle with the four card presets at the top; changes apply live, and while paused the
 current frame is re-processed so you can tune on a still. The View row shows any pipeline stage (the raw
 composite signal, separated luma or chroma, the decoded picture before MPEG-2) and the A/B wipe compares
-against the clean source. Transport: play/pause, single-frame step, loop, and a seek bar.
+against the clean source. Transport: play/pause, single-frame step, loop, a seek bar, and volume with mute. Sound plays in sync with the
+picture (if the filter falls behind, frames are skipped to keep up with the audio). Hovering the picture shows a
+timeline along its bottom edge: hover to see the time, click or drag to seek.
 
 Saving: **Snapshot PNG** writes what's on screen at 720×480; **Record MP4** records what's on screen in real
 time until you stop it; **Export whole file** re-processes the file from the start (or from a start time, for
 a duration) at a chosen size and quality with the source audio, in the background with a progress bar. The
-same keys as the bare player work here: `space`, `.`, `S`, `R`, and `O` to open.
+same keys as the bare player work here: `space`, `.`, `S`, `R`, and `O` to open; plus `←` `→` to seek 5 s,
+`↑` `↓` for volume and `M` to mute.
 
 ### Bare player keys (`capfx play`)
 
