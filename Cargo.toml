@@ -1,0 +1,26 @@
+[package]
+name = "capfx"
+version = "0.1.0"
+edition = "2021"
+description = "2005-era composite capture card simulation: plays media, applies the filter, saves PNG/MP4"
+license = "MIT"
+
+[[bin]]
+name = "capfx"
+path = "src/main.rs"
+
+[lib]
+name = "capfx"
+path = "src/lib.rs"
+
+[dependencies]
+rayon = "1.10"
+minifb = "0.27"
+png = "0.17"
+eframe = { version = "0.31", default-features = false, features = ["glow", "default_fonts", "x11", "wayland"] }
+rfd = "0.15"
+
+[profile.release]
+opt-level = 3
+codegen-units = 1
+lto = "thin"
