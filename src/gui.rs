@@ -266,11 +266,10 @@ impl eframe::App for App {
             egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
                 ui.add_space(6.0);
                 ui.horizontal(|ui| {
-                    if ui.button("Open…").on_hover_text("Any video or image ffmpeg can read (O)").clicked() { self.pick_file(); }
+                    if ui.button("Open…").on_hover_text("Shortcut: O").clicked() { self.pick_file(); }
                     let r = ui.add(egui::TextEdit::singleline(&mut self.path_box).hint_text("or paste a path and press Enter").desired_width(f32::INFINITY));
                     if r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) && !self.path_box.trim().is_empty() { let p = self.path_box.trim().to_string(); self.open(p); }
                 });
-                ui.small("You can also drop a file onto the window.");
                 ui.add_space(8.0);
 
                 ui.heading("Card preset");
@@ -310,7 +309,7 @@ impl eframe::App for App {
                     });
                 });
                 egui::CollapsingHeader::new("MPEG-2 encoder").default_open(true).show(ui, |ui| {
-                    c |= ui.checkbox(&mut p.mpeg, "Encode MPEG-2 (8×8 DCT quantisation)").changed();
+                    c |= ui.checkbox(&mut p.mpeg, "Encode MPEG-2").changed();
                     ui.add_enabled_ui(p.mpeg, |ui| {
                         c |= ui.add(egui::Slider::new(&mut p.q, 2.0..=62.0).step_by(2.0).text("Quantiser scale")).changed();
                         c |= ui.add(egui::Slider::new(&mut p.pump, 0.0..=1.0).custom_formatter(|v, _| format!("{:.0}%", v * 100.0)).text("GOP pumping")).changed();
@@ -339,7 +338,7 @@ impl eframe::App for App {
                     }
                     match &recording {
                         Some((name, secs)) => { if ui.button(egui::RichText::new(format!("Stop recording  {:.1} s", secs)).color(egui::Color32::from_rgb(230, 80, 80))).clicked() { let _ = self.tx.send(Cmd::Record(None)); } ui.small(name.rsplit(['/', '\\']).next().unwrap_or(name)); }
-                        None => if ui.button("Record MP4").on_hover_text("Records what's on screen in real time (R)").clicked() {
+                        None => if ui.button("Record MP4").on_hover_text("Records what's on screen (R)").clicked() {
                             let path = rfd::FileDialog::new().set_file_name(job::stamped("mp4")).add_filter("MP4", &["mp4"]).save_file();
                             if let Some(p) = path { let _ = self.tx.send(Cmd::Record(Some(p.to_string_lossy().into_owned()))); }
                         },
@@ -357,7 +356,7 @@ impl eframe::App for App {
                             if let Some(p) = path { self.export_out = p.to_string_lossy().into_owned(); }
                         }
                     });
-                    ui.small("Format follows the extension: .mp4/.mkv/.mov (H.264, 4:3), .webm (VP9), .gif");
+                    ui.small("Format follows the extension: mp4, mkv, mov, webm or gif");
                     ui.horizontal(|ui| {
                         ui.label("Start (s)"); ui.add(egui::TextEdit::singleline(&mut self.export_start).desired_width(50.0));
                         ui.label("Duration (s)"); ui.add(egui::TextEdit::singleline(&mut self.export_dur).hint_text("all").desired_width(50.0));
@@ -368,7 +367,7 @@ impl eframe::App for App {
                         ui.label("Quality (CRF)"); ui.add(egui::DragValue::new(&mut self.export_crf).range(10..=35));
                         ui.checkbox(&mut self.export_audio, "Audio");
                     });
-                    if ui.add_sized([ui.available_width(), 28.0], egui::Button::new("Export with current settings")).clicked() {
+                    if ui.add_sized([ui.available_width(), 28.0], egui::Button::new("Export")).clicked() {
                         if let Some(m) = &media {
                             let start: f64 = self.export_start.trim().parse().unwrap_or(0.0);
                             let frames = self.export_dur.trim().parse::<f64>().ok().map(|d| (d * 29.97).round() as u64);

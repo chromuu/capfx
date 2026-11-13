@@ -27,7 +27,7 @@ OPTIONS (all commands)
   --view <source|composite|luma|chroma|decoded|capture>
   --size <WxH>                         output picture size (default 720x480, shown 4:3)
   --start <seconds>  --duration <seconds>
-  --frames <n>                         stop after n output frames (render/still: still defaults to 1)
+  --frames <n>                         render: stop after n output frames
   --frame <n>                          still: NTSC frame number to render (changes crawl phase, GOP position)
   --crf <n>                            encoder quality for render (default 18)
   --no-audio                           render: don't copy the source audio
