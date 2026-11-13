@@ -1,17 +1,3 @@
-# capfx: composite capture '05
-
-A 2005-era composite video capture card, simulated end to end: NTSC composite encoding at 4fsc, notch or comb
-Y/C separation with dot crawl and hanging dots, chroma bleed, a hardware MPEG-2 encoder's 8×8 blocking, and
-interlaced playback. Three implementations of the same tested pipeline:
-
-| Folder | What |
-|---|---|
-| `/` (this crate) | **Rust player and renderer with a GUI**: plays any media ffmpeg reads, applies the filter live, saves PNG/MP4/WebM/GIF. |
-| `web/` | The original WebGL2 shader as an interactive page, plus the headless Playwright test suite (`web/test/run.mjs`). |
-| `android/` | OpenGL ES 3.0 filter for Android (Java), generated from the same shaders. |
-
-The Rust port matches the WebGL version pixel for pixel outside MPEG quantiser rounding ties (`testdata/parity.mjs`).
-
 ---
 
 # capfx: composite capture '05
@@ -135,16 +121,3 @@ let rgb = capfx::present::render(&pl, p.view, p.overscan, None, 720, 480); // RG
 
 `pl.out`, `pl.dec`, `pl.comp` and the other stages are available as float planes.
 
-## Testing
-
-- `cargo test --release`: round trip, phase error vs tint, MPEG blocking growth.
-- `testdata/parity.mjs` (needs the WebGL test page from `web/test/run.mjs`, Node and Playwright): runs the same
-  test card through both implementations and compares every pixel. The analogue chain matches to 0.04/255.
-  With MPEG-2 on, about 4% of 8×8 blocks differ by one quantiser step because GPU and CPU float rounding can
-  land either side of the same tie; every pixel outside those blocks matches to under 1/255.
-- The GUI was exercised under a virtual X display with synthetic mouse and key input: opened a video, played,
-  switched presets and deinterlacer, paused, stepped, seeked, saved a PNG, recorded a real-time MP4, and ran
-  a full export with audio (120 frames, 4:3, AAC) through the progress bar. The file dialogs use the native
-  Windows/macOS dialogs and were not exercised in that environment.
-- The bare player was exercised under a virtual X display: it opened, ran, saved PNGs, recorded a real-time MP4,
-  switched presets and views, toggled the wipe, and quit on `q`. It has not been run on macOS or Windows.
