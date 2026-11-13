@@ -1,0 +1,8 @@
+/target
+/web/test/out
+/web/test/page.html
+/android/verify
+*.f32
+capfx_*.png
+capfx_*.mp4
+*_captured.mp4

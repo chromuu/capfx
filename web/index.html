@@ -1,0 +1,734 @@
+<title>Composite Capture Shader</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Saira+Condensed:wght@500;600;700&family=IBM+Plex+Sans:wght@400;500&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: capture monitor left, rack-style control panel right; stacks on phones. Single dark look (it's a video monitor). */
+:root {
+  --bg: #0f1216;
+  --panel: #161b21;
+  --panel-2: #1c232b;
+  --line: #2a323c;
+  --fg: #dde2e7;
+  --muted: #8b97a4;
+  --accent: #e3a043;
+  --rec: #e5484d;
+  --ok: #57c28a;
+  --display: "Saira Condensed", "Arial Narrow", "Roboto Condensed", sans-serif;
+  --body: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  color-scheme: dark;
+}
+html, body { background: var(--bg); color: var(--fg); }
+body {
+  font-family: var(--body); font-size: 14px; line-height: 1.45;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 20px 32px;
+}
+.wrap { max-width: 1240px; margin: 0 auto; display: grid; gap: 18px; }
+header { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 16px; }
+h1 { font-family: var(--display); font-weight: 700; font-size: 30px; letter-spacing: .02em; margin: 0; text-transform: uppercase; text-wrap: balance; }
+h1 span { color: var(--accent); }
+header p { margin: 0; color: var(--muted); max-width: 62ch; }
+.main { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 18px; align-items: start; }
+@media (max-width: 900px) { .main { grid-template-columns: minmax(0, 1fr); } }
+
+.monitor { display: grid; gap: 10px; min-width: 0; }
+.screen { position: relative; background: #000; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; aspect-ratio: 4 / 3; max-width: 100%; touch-action: none; }
+.screen canvas { display: block; width: 100%; height: 100%; }
+.err { position: absolute; inset: 0; display: grid; place-items: center; padding: 24px; text-align: center; color: var(--fg); background: #000; font-family: var(--mono); font-size: 13px; }
+.readout { display: flex; flex-wrap: wrap; gap: 6px 18px; font-family: var(--mono); font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.readout b { color: var(--fg); font-weight: 500; }
+.rec { color: var(--rec); display: inline-flex; align-items: center; gap: 6px; }
+.rec::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--rec); animation: blink 1s steps(1) infinite; }
+.paused .rec::before { animation: none; opacity: .35; }
+@keyframes blink { 50% { opacity: .2; } }
+@media (prefers-reduced-motion: reduce) { .rec::before { animation: none; } }
+
+.row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.label { font-family: var(--display); font-weight: 600; text-transform: uppercase; letter-spacing: .08em; font-size: 12px; color: var(--muted); margin-right: 4px; }
+.chip { font: 500 12px/1 var(--mono); color: var(--fg); background: var(--panel-2); border: 1px solid var(--line); border-radius: 4px; padding: 7px 10px; cursor: pointer; }
+.chip:hover { border-color: #3d4752; }
+.chip[aria-pressed="true"] { background: var(--accent); color: #17120a; border-color: var(--accent); }
+.chip:focus-visible, input:focus-visible, select:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.chip.small { padding: 5px 8px; font-size: 11px; }
+
+.panel { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; display: grid; min-width: 0; }
+.sec { padding: 12px 14px; display: grid; gap: 10px; border-top: 1px solid var(--line); }
+.sec:first-child { border-top: 0; }
+.sec h2 { margin: 0; font-family: var(--display); font-weight: 700; font-size: 15px; text-transform: uppercase; letter-spacing: .1em; display: flex; justify-content: space-between; align-items: baseline; }
+.sec h2 small { font-family: var(--mono); font-weight: 400; font-size: 11px; letter-spacing: 0; text-transform: none; color: var(--muted); }
+.ctl { display: grid; grid-template-columns: 1fr auto; gap: 2px 8px; align-items: center; }
+.ctl label { font-size: 13px; }
+.ctl output { font-family: var(--mono); font-size: 12px; color: var(--accent); font-variant-numeric: tabular-nums; }
+.ctl input[type=range] { grid-column: 1 / -1; width: 100%; accent-color: var(--accent); margin: 2px 0 0; }
+.seg { display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; gap: 4px; }
+.seg .chip { text-align: center; padding: 7px 4px; }
+.toggle { display: flex; justify-content: space-between; align-items: center; gap: 8px; font-size: 13px; }
+.toggle input { accent-color: var(--accent); width: 18px; height: 18px; }
+.note { font-size: 12px; color: var(--muted); margin: 0; }
+.file { display: none; }
+.foot { color: var(--muted); font-size: 12px; max-width: 80ch; }
+.foot code { font-family: var(--mono); color: var(--fg); }
+</style>
+
+<div class="wrap">
+  <header>
+    <h1>Composite Capture <span>'05</span></h1>
+    <p>A console's composite output, a cheap PCI tuner card and a hardware MPEG-2 encoder, simulated end to end in WebGL2 shaders.</p>
+  </header>
+
+  <div class="main">
+    <section class="monitor">
+      <div class="screen" id="screen">
+        <canvas id="gl" width="960" height="720" aria-label="Simulated capture output"></canvas>
+        <div class="err" id="err" hidden></div>
+      </div>
+      <div class="readout" id="readout">
+        <span class="rec" id="tc">00:00:00;00</span>
+        <span>NTSC-M <b>3.579545 MHz</b></span>
+        <span>4f<sub>sc</sub> <b>764</b> smp/line</span>
+        <span><b>720×480i</b> 4:2:0</span>
+        <span id="qread">q <b>10</b></span>
+        <span id="fps">— fps</span>
+      </div>
+      <div class="row" role="group" aria-label="Pipeline stage">
+        <span class="label">View</span>
+        <button class="chip small" data-view="source">Source</button>
+        <button class="chip small" data-view="composite">Composite</button>
+        <button class="chip small" data-view="luma">Luma</button>
+        <button class="chip small" data-view="chroma">Chroma</button>
+        <button class="chip small" data-view="decoded">Decoded</button>
+        <button class="chip small" data-view="final">Capture</button>
+      </div>
+      <div class="row">
+        <span class="label">Tools</span>
+        <button class="chip small" id="wipe" aria-pressed="false">A/B wipe</button>
+        <button class="chip small" id="pause" aria-pressed="false">Pause</button>
+        <button class="chip small" id="stepb">Step 1 frame</button>
+        <span class="note" id="wipenote" hidden>Drag on the picture to move the wipe. Left is the clean source.</span>
+      </div>
+    </section>
+
+    <aside class="panel" id="panel">
+      <div class="sec">
+        <h2>Source</h2>
+        <div class="row" id="srcrow">
+          <button class="chip" data-src="game">Game scene</button>
+          <button class="chip" data-src="bars">SMPTE bars</button>
+          <button class="chip" data-src="res">Multiburst</button>
+          <button class="chip" data-src="file">Your file…</button>
+          <input class="file" type="file" id="file" accept="image/*,video/*">
+        </div>
+      </div>
+      <div class="sec">
+        <h2>Card preset</h2>
+        <div class="row" id="presets"></div>
+      </div>
+      <div class="sec" id="sec-signal"><h2>Cable &amp; signal <small>console → card</small></h2></div>
+      <div class="sec" id="sec-dec"><h2>Video decoder <small>Y/C separation</small></h2></div>
+      <div class="sec" id="sec-enc"><h2>MPEG-2 encoder <small>8×8 DCT</small></h2></div>
+      <div class="sec" id="sec-out"><h2>Playback</h2></div>
+    </aside>
+  </div>
+
+  <p class="foot">Pipeline: source → composite encode at 4f<sub>sc</sub> with band-limited I/Q → notch or comb Y/C separation → quadrature demodulation → BT.601 4:2:0 → MPEG-2 intra quantisation with the default matrix → interlaced playback. Subcarrier phase advances 180° per line and per frame, so dot crawl moves the way it did on real hardware. Test hook: <code>window.CAP</code>.</p>
+</div>
+
+<script>
+"use strict";
+// ---------------------------------------------------------------- shaders
+const VS = `#version 300 es
+void main(){ vec2 p = vec2((gl_VertexID<<1)&2, gl_VertexID&2); gl_Position = vec4(p*2.0-1.0,0.0,1.0); }`;
+
+const HEAD = `#version 300 es
+precision highp float; precision highp int; precision highp sampler2D;
+out vec4 o;
+const float PI = 3.14159265358979;
+uint pcg(uint v){ uint s=v*747796405u+2891336453u; uint w=((s>>((s>>28u)+4u))^s)*277803737u; return (w>>22u)^w; }
+float rnd(uint v){ return float(pcg(v))*(1.0/4294967296.0); }
+const mat3 RGB2YIQ = mat3(0.299,0.596,0.211, 0.587,-0.274,-0.523, 0.114,-0.322,0.312);
+const mat3 YIQ2RGB = mat3(1.0,1.0,1.0, 0.956,-0.272,-1.106, 0.621,-0.647,1.703);
+// subcarrier phase in quarter cycles at 4fsc: 227.5 cycles/line (+2 per field line),
+// 262.5-line field offset (+3), 1/2 cycle per frame (+2)
+int quarter(int x, int line, int frame){ return (x + 2*(line>>1) + 3*(line&1) + 2*(frame&1)) & 3; }
+`;
+
+// 1. Weave two fields of the console's picture into the 720x480 capture raster (704 active, blanked edges)
+const FS_SRC = HEAD + `
+uniform sampler2D uA, uB;
+void main(){
+  float u = (gl_FragCoord.x - 8.0)/704.0, v = gl_FragCoord.y/480.0;
+  vec3 c = vec3(0.0);
+  if (u >= 0.0 && u <= 1.0) c = ((int(gl_FragCoord.y)&1)==0) ? texture(uA, vec2(u,v)).rgb : texture(uB, vec2(u,v)).rgb;
+  o = vec4(c, 1.0);
+}`;
+
+// 2. Composite encoder: band-limit Y/I/Q, modulate the subcarrier, add cable impairments
+const FS_ENC = HEAD + `
+uniform sampler2D uSrc;
+uniform int uFrame; uniform float uTime, uNoise, uJitter, uHum, uBeat, uHue, uSetup, uSigY, uSigI, uSigQ;
+vec3 srcAt(float xs, int line){
+  float f = xs - 0.5; float fi = floor(f); int i0 = int(fi); float t = f - fi;
+  vec3 a = texelFetch(uSrc, ivec2(clamp(i0,0,719), line), 0).rgb;
+  vec3 b = texelFetch(uSrc, ivec2(clamp(i0+1,0,719), line), 0).rgb;
+  return mix(a, b, t);
+}
+void main(){
+  int x = int(gl_FragCoord.x), line = int(gl_FragCoord.y);
+  const float SC = 720.0/764.0;
+  uint lseed = uint(line)*7919u + uint(uFrame)*104729u;
+  float jit = uJitter*(0.6*sin(float(line)*0.043 + uTime*2.7) + 0.8*(rnd(lseed)-0.5));
+  float xs0 = (float(x) + 0.5 + jit)*SC;
+  vec3 s = vec3(0.0), w = vec3(0.0);
+  for (int k=-12; k<=12; k++){
+    float kk = float(k);
+    vec3 g = exp(-kk*kk/(2.0*vec3(uSigY*uSigY, uSigI*uSigI, uSigQ*uSigQ)));
+    if (g.z < 1e-4) continue;
+    vec3 yiq = RGB2YIQ*srcAt(xs0 + kk*SC, line);
+    s += g*yiq; w += g;
+  }
+  vec3 yiq = s/w;
+  float ph = float(quarter(x, line, uFrame))*0.5*PI + uHue;
+  float sig = uSetup + (1.0-uSetup)*(yiq.x + yiq.y*cos(ph) + yiq.z*sin(ph));
+  sig += uHum*0.07*sin(2.0*PI*(float(line)/480.0 + uTime*0.06));
+  sig += uBeat*0.035*sin(2.0*PI*(float(x)*0.093 + float(line)*0.31 + uTime*1.7));
+  uint ns = uint(x)*73856093u ^ uint(line)*19349663u ^ uint(uFrame)*83492791u;
+  float u1 = max(rnd(ns), 1e-7), u2 = rnd(ns ^ 0x9e3779b9u);
+  sig += uNoise*sqrt(-2.0*log(u1))*cos(2.0*PI*u2);
+  o = vec4(sig, 0.0, 0.0, 1.0);
+}`;
+
+// 3a. Y/C separation, stage 1: notch input or field-line comb, then a zero-DC horizontal bandpass
+const FS_YC1 = HEAD + `
+uniform sampler2D uComp; uniform int uMode;
+float S(int x, int l){ return texelFetch(uComp, ivec2(clamp(x,0,763), clamp(l,0,479)), 0).r; }
+float rawC(int x, int l){
+  if (uMode == 0) return S(x,l);                                  // notch: whole signal
+  if (uMode == 1) return 0.5*(S(x,l) - S(x,l+2));                 // 2-line comb (same field)
+  return 0.25*(2.0*S(x,l) - S(x,l-2) - S(x,l+2));                 // 3-line comb
+}
+void main(){
+  int x = int(gl_FragCoord.x), l = int(gl_FragCoord.y);
+  float c0;
+  if (uMode == 0) c0 = 0.25*(2.0*rawC(x,l) - rawC(x-2,l) - rawC(x+2,l));   // zero-DC bandpass, narrowed in pass 3b
+  else c0 = rawC(x,l) - (6.0*rawC(x,l) + 4.0*(rawC(x-2,l) + rawC(x+2,l)) + rawC(x-4,l) + rawC(x+4,l))/16.0; // flat-top 1-cos^4 band
+  o = vec4(S(x,l), c0, 0.0, 1.0);
+}`;
+
+// 3b. Y/C separation, stage 2: gaussian-windowed fsc bandpass sets the chroma band; Y = S - C
+const FS_YC2 = HEAD + `
+uniform sampler2D uT; uniform float uSigB;
+void main(){
+  int x = int(gl_FragCoord.x), l = int(gl_FragCoord.y);
+  vec4 t0 = texelFetch(uT, ivec2(x,l), 0); float s = t0.r;
+  if (uSigB <= 0.0){ o = vec4(s - t0.g, t0.g, s, 1.0); return; }   // comb modes: band already set in 3a
+  float c = 0.0, n = 0.0;
+  for (int k=-12; k<=12; k+=2){
+    float kk = float(k); float g = exp(-kk*kk/(2.0*uSigB*uSigB));
+    float sg = ((k/2)&1)==0 ? 1.0 : -1.0;
+    c += g*sg*texelFetch(uT, ivec2(clamp(x+k,0,763), l), 0).g; n += g;
+  }
+  c /= n;
+  o = vec4(s - c, c, s, 1.0);
+}`;
+
+// 4. Quadrature demodulation, chroma low-pass, luma peaking, levels, 8-bit ADC clip -> 720 samples
+const FS_DEM = HEAD + `
+uniform sampler2D uYC; uniform int uFrame;
+uniform float uSigD, uPeak, uSat, uTint, uSetupDec;
+float Yat(float xc, int l){
+  float f = floor(xc); int i = int(f); float t = xc - f;
+  return mix(texelFetch(uYC, ivec2(clamp(i,0,763),l),0).r, texelFetch(uYC, ivec2(clamp(i+1,0,763),l),0).r, t);
+}
+void main(){
+  int x = int(gl_FragCoord.x), l = int(gl_FragCoord.y);
+  float xc = (float(x)+0.5)*(764.0/720.0) - 0.5;
+  float Y = Yat(xc,l);
+  Y += uPeak*(Y - 0.5*(Yat(xc-1.7,l) + Yat(xc+1.7,l)));
+  int n = int(floor(xc + 0.5));
+  vec2 iq = vec2(0.0); float W = 0.0;
+  for (int k=-12; k<=12; k++){
+    int xi = clamp(n+k, 0, 763);
+    float d = float(n+k) - xc; float g = exp(-d*d/(2.0*uSigD*uSigD));
+    float c = texelFetch(uYC, ivec2(xi,l), 0).g;
+    float ph = float(quarter(xi, l, uFrame))*0.5*PI + uTint;
+    iq += g*c*2.0*vec2(cos(ph), sin(ph)); W += g;
+  }
+  iq /= W;
+  float k = 1.0/(1.0 - uSetupDec);
+  vec3 rgb = YIQ2RGB*vec3((Y - uSetupDec)*k, iq*k*uSat);
+  o = vec4(clamp(rgb, 0.0, 1.0), 1.0);
+}`;
+
+// 5a. BT.601 luma plane, studio range, 8-bit
+const FS_TOY = HEAD + `
+uniform sampler2D uT;
+void main(){
+  vec3 c = texelFetch(uT, ivec2(gl_FragCoord.xy), 0).rgb;
+  float y = (16.0 + 219.0*dot(c, vec3(0.299,0.587,0.114)))/255.0;
+  o = vec4(floor(y*255.0+0.5)/255.0, 0.0, 0.0, 1.0);
+}`;
+// 5b. 4:2:0 chroma plane (360x240), field-based subsampling as an interlaced MPEG-2 encoder does
+const FS_TOC = HEAD + `
+uniform sampler2D uT;
+void main(){
+  int cx = int(gl_FragCoord.x), cr = int(gl_FragCoord.y);
+  int p = cr & 1, j = cr >> 1; int r0 = 4*j + p, r1 = r0 + 2;
+  vec3 c = 0.25*(texelFetch(uT, ivec2(2*cx, r0),0).rgb + texelFetch(uT, ivec2(2*cx+1, r0),0).rgb
+               + texelFetch(uT, ivec2(2*cx, r1),0).rgb + texelFetch(uT, ivec2(2*cx+1, r1),0).rgb);
+  float y = dot(c, vec3(0.299,0.587,0.114));
+  vec2 cbcr = vec2((c.b - y)*0.564, (c.r - y)*0.713);
+  cbcr = floor((128.0 + 224.0*cbcr) + 0.5)/255.0;
+  o = vec4(cbcr, 0.0, 1.0);
+}`;
+
+// 6. Separable 8-point DCT. Forward vertical pass also applies MPEG-2 intra quantisation.
+const FS_DCT = HEAD + `
+uniform sampler2D uT; uniform int uDir, uInv, uQuant; uniform float uQ;
+const float QM[64] = float[64](
+  8.,16.,19.,22.,26.,27.,29.,34.,  16.,16.,22.,24.,27.,29.,34.,37.,
+  19.,22.,26.,27.,29.,34.,34.,38., 22.,22.,26.,27.,29.,34.,37.,40.,
+  22.,26.,27.,29.,32.,35.,40.,48., 26.,27.,29.,32.,35.,40.,48.,58.,
+  26.,27.,29.,34.,38.,46.,56.,69., 27.,29.,35.,38.,46.,56.,69.,83.);
+float cf(int k){ return k==0 ? 0.35355339 : 0.5; }
+void main(){
+  ivec2 p = ivec2(gl_FragCoord.xy);
+  int pos = uDir==0 ? p.x : p.y; int i = pos & 7; int base = pos - i;
+  vec4 acc = vec4(0.0);
+  for (int n=0; n<8; n++){
+    ivec2 q = uDir==0 ? ivec2(base+n, p.y) : ivec2(p.x, base+n);
+    vec4 v = texelFetch(uT, q, 0);
+    acc += uInv==0 ? v*cf(i)*cos(float((2*n+1)*i)*PI/16.0)
+                   : v*cf(n)*cos(float((2*i+1)*n)*PI/16.0);
+  }
+  if (uQuant == 1){
+    int u = p.x & 7, vv = p.y & 7;
+    vec4 F = acc*255.0;
+    if (u == 0 && vv == 0) F = floor(F/8.0 + 0.5)*8.0; // 8-bit intra DC precision
+    else {
+      float st = QM[vv*8+u]*uQ/16.0;
+      F = sign(F)*max(floor(abs(F)/st + 0.4), 0.0)*st;  // slight dead zone, as encoders did
+    }
+    acc = F/255.0;
+  }
+  o = acc;
+}`;
+
+// 7. Decoder output: 4:2:0 upsampling (field-correct or the progressive CUE bug), YCbCr->RGB, deinterlace
+const FS_OUT = HEAD + `
+uniform sampler2D uY, uC; uniform int uCUE, uDeint, uFrame;
+vec2 C(int cx, int cr){ return texelFetch(uC, ivec2(clamp(cx,0,359), clamp(cr,0,239)), 0).rg; }
+vec2 chromaRow(float cxf, int cr){
+  float f = floor(cxf); int i = int(f); return mix(C(i,cr), C(i+1,cr), cxf - f);
+}
+vec3 pix(int x, int l){
+  l = clamp(l, 0, 479);
+  float Y = texelFetch(uY, ivec2(x,l), 0).r;
+  float cxf = (float(x) - 0.5)*0.5;
+  vec2 cc;
+  if (uCUE == 1){
+    float r = (float(l) - 0.5)*0.5; float f = floor(r);
+    cc = mix(chromaRow(cxf, int(f)), chromaRow(cxf, int(f)+1), r - f);
+  } else {
+    int p = l & 1, m = l >> 1;
+    float r = (float(m) - 0.5)*0.5; float f = floor(r); int j = int(f);
+    cc = mix(chromaRow(cxf, 2*j+p), chromaRow(cxf, 2*(j+1)+p), r - f);
+  }
+  float yf = (Y*255.0 - 16.0)/219.0; vec2 c = (cc*255.0 - 128.0)/224.0;
+  return vec3(yf + 1.402*c.y, yf - 0.344136*c.x - 0.714136*c.y, yf + 1.772*c.x);
+}
+void main(){
+  int x = int(gl_FragCoord.x), l = int(gl_FragCoord.y);
+  vec3 c;
+  if (uDeint == 1){ int p = uFrame & 1; c = ((l&1)==p) ? pix(x,l) : 0.5*(pix(x,l-1)+pix(x,l+1)); }
+  else if (uDeint == 2) c = 0.5*(pix(x,l) + pix(x, l^1));
+  else c = pix(x,l);
+  o = vec4(clamp(c,0.0,1.0), 1.0);
+}`;
+
+// 8. Present any stage to the 4:3 monitor, with overscan and an A/B wipe
+const FS_PRE = HEAD + `
+uniform sampler2D uT, uRef; uniform int uKind; uniform float uOver, uSplit; uniform vec2 uCanvas, uOrigin;
+vec4 bil(sampler2D t, vec2 uv){
+  ivec2 sz = textureSize(t,0); vec2 f = uv*vec2(sz) - 0.5; vec2 fl = floor(f); ivec2 i = ivec2(fl); vec2 w = f - fl;
+  ivec2 m = sz - 1;
+  vec4 a = texelFetch(t, clamp(i,ivec2(0),m),0), b = texelFetch(t, clamp(i+ivec2(1,0),ivec2(0),m),0);
+  vec4 c = texelFetch(t, clamp(i+ivec2(0,1),ivec2(0),m),0), d = texelFetch(t, clamp(i+ivec2(1,1),ivec2(0),m),0);
+  return mix(mix(a,b,w.x), mix(c,d,w.x), w.y);
+}
+void main(){
+  vec2 fc = gl_FragCoord.xy - uOrigin;
+  vec2 uv0 = fc/uCanvas; vec2 uv = mix(vec2(uOver), vec2(1.0-uOver), uv0);
+  vec4 v = bil(uT, uv); vec3 c;
+  if (uKind == 1) c = vec3(clamp(v.r/1.3, 0.0, 1.0));
+  else if (uKind == 2) c = vec3(clamp(v.r, 0.0, 1.0));
+  else if (uKind == 3) c = vec3(clamp(0.5 + v.g*1.4, 0.0, 1.0));
+  else c = v.rgb;
+  if (uSplit >= 0.0){
+    float dx = fc.x - uSplit*uCanvas.x;
+    if (dx < 0.0) c = bil(uRef, uv).rgb;
+    if (abs(dx) < 1.5) c = vec3(0.89, 0.63, 0.26);
+  }
+  o = vec4(c, 1.0);
+}`;
+
+// ---------------------------------------------------------------- parameters
+const MHZ = 1.897; // gaussian sigma (in 4fsc samples) = 1.897 / (-3 dB frequency in MHz)
+const PRESETS = {
+  "Bt878 PCI tuner": { ycMode:0, ycMHz:1.3, chromaMHz:1.1, peak:0.7, noise:0.018, jitter:0.5, hum:0.12, beat:0.15, hue:4, tint:0, sat:1.05, levels:0, mpeg:true, q:12, pump:0.6, cue:false, deint:0 },
+  "Hardware MPEG-2": { ycMode:2, ycMHz:1.6, chromaMHz:1.3, peak:0.35, noise:0.01, jitter:0.25, hum:0.05, beat:0, hue:0, tint:0, sat:1.0, levels:0, mpeg:true, q:8, pump:0.4, cue:false, deint:0 },
+  "USB 2.0 dongle": { ycMode:1, ycMHz:1.2, chromaMHz:0.8, peak:1.0, noise:0.03, jitter:0.9, hum:0.2, beat:0.3, hue:-6, tint:0, sat:1.15, levels:1, mpeg:true, q:22, pump:0.8, cue:true, deint:2 },
+  "Clean reference": { ycMode:2, ycMHz:1.6, chromaMHz:1.3, peak:0, noise:0, jitter:0, hum:0, beat:0, hue:0, tint:0, sat:1.0, levels:0, mpeg:true, q:2, pump:0, cue:false, deint:0 },
+};
+const P = Object.assign({ source:"game", overscan:0.03, view:"final", wipe:false, split:0.5, paused:false }, PRESETS["Bt878 PCI tuner"]);
+
+const CONTROLS = {
+  "sec-signal": [
+    { k:"noise", label:"RF noise", min:0, max:0.08, step:0.002, fmt:v=>(v*100).toFixed(1)+" IRE" },
+    { k:"jitter", label:"Line timing jitter", min:0, max:2, step:0.05, fmt:v=>Math.round(v*69.8)+" ns" },
+    { k:"hum", label:"Hum bar", min:0, max:1, step:0.01, fmt:v=>Math.round(v*100)+"%" },
+    { k:"beat", label:"RF interference", min:0, max:1, step:0.01, fmt:v=>Math.round(v*100)+"%" },
+    { k:"hue", label:"Subcarrier phase error", min:-30, max:30, step:1, fmt:v=>(v>0?"+":"")+v+"°" },
+  ],
+  "sec-dec": [
+    { k:"ycMode", seg:["Notch","2-line comb","3-line comb"] },
+    { k:"ycMHz", label:"Notch width", min:0.6, max:2.5, step:0.05, fmt:v=>"±"+v.toFixed(2)+" MHz" },
+    { k:"chromaMHz", label:"Chroma bandwidth", min:0.4, max:2.0, step:0.05, fmt:v=>v.toFixed(2)+" MHz" },
+    { k:"peak", label:"Luma peaking", min:0, max:1.5, step:0.05, fmt:v=>"+"+Math.round(v*100)+"%" },
+    { k:"sat", label:"Saturation", min:0, max:2, step:0.05, fmt:v=>Math.round(v*100)+"%" },
+    { k:"tint", label:"Tint", min:-30, max:30, step:1, fmt:v=>(v>0?"+":"")+v+"°" },
+    { k:"levels", seg:["Setup matched","Raised blacks","Crushed blacks"] },
+  ],
+  "sec-enc": [
+    { k:"mpeg", toggle:"Encode MPEG-2" },
+    { k:"q", label:"Quantiser scale", min:2, max:62, step:2, fmt:v=>"q "+v },
+    { k:"pump", label:"GOP pumping (15-frame GOP)", min:0, max:1, step:0.05, fmt:v=>Math.round(v*100)+"%" },
+    { k:"cue", toggle:"Progressive chroma upsampling (CUE bug)" },
+  ],
+  "sec-out": [
+    { k:"deint", seg:["Weave","Bob","Blend"] },
+    { k:"overscan", label:"Overscan crop", min:0, max:0.08, step:0.005, fmt:v=>(v*100).toFixed(1)+"%" },
+  ],
+};
+
+// ---------------------------------------------------------------- GL setup
+const canvas = document.getElementById("gl");
+const errEl = document.getElementById("err");
+function fail(msg){ errEl.textContent = msg; errEl.hidden = false; throw new Error(msg); }
+const gl = canvas.getContext("webgl2", { antialias:false, preserveDrawingBuffer:true, alpha:false });
+if (!gl) fail("This needs WebGL2, which this browser or view doesn't provide.");
+let FMT = null;
+if (gl.getExtension("EXT_color_buffer_float")) FMT = { internal: gl.RGBA32F, type: gl.FLOAT, name:"RGBA32F" };
+else if (gl.getExtension("EXT_color_buffer_half_float")) FMT = { internal: gl.RGBA16F, type: gl.HALF_FLOAT, name:"RGBA16F" };
+else fail("This GPU can't render to floating-point textures, which the signal simulation needs.");
+
+function compile(type, src){
+  const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) fail("Shader compile error:\n" + gl.getShaderInfoLog(s));
+  return s;
+}
+const vsObj = compile(gl.VERTEX_SHADER, VS);
+function program(fs){
+  const p = gl.createProgram(); gl.attachShader(p, vsObj); gl.attachShader(p, compile(gl.FRAGMENT_SHADER, fs)); gl.linkProgram(p);
+  if (!gl.getProgramParameter(p, gl.LINK_STATUS)) fail("Shader link error:\n" + gl.getProgramInfoLog(p));
+  const u = {}; const n = gl.getProgramParameter(p, gl.ACTIVE_UNIFORMS);
+  for (let i=0;i<n;i++){ const nm = gl.getActiveUniform(p,i).name; u[nm] = gl.getUniformLocation(p,nm); }
+  return { p, u };
+}
+const PR = { src:program(FS_SRC), enc:program(FS_ENC), yc1:program(FS_YC1), yc2:program(FS_YC2), dem:program(FS_DEM),
+             toy:program(FS_TOY), toc:program(FS_TOC), dct:program(FS_DCT), out:program(FS_OUT), pre:program(FS_PRE) };
+gl.bindVertexArray(gl.createVertexArray());
+
+function target(w, h){
+  const t = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, t);
+  gl.texImage2D(gl.TEXTURE_2D, 0, FMT.internal, w, h, 0, gl.RGBA, FMT.type, null);
+  for (const [k,v] of [[gl.TEXTURE_MIN_FILTER,gl.NEAREST],[gl.TEXTURE_MAG_FILTER,gl.NEAREST],[gl.TEXTURE_WRAP_S,gl.CLAMP_TO_EDGE],[gl.TEXTURE_WRAP_T,gl.CLAMP_TO_EDGE]]) gl.texParameteri(gl.TEXTURE_2D,k,v);
+  const f = gl.createFramebuffer(); gl.bindFramebuffer(gl.FRAMEBUFFER, f);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, t, 0);
+  if (gl.checkFramebufferStatus(gl.FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE) fail("Framebuffer " + w + "×" + h + " " + FMT.name + " is incomplete.");
+  return { t, f, w, h };
+}
+const T = { src:target(720,480), comp:target(764,480), yc1:target(764,480), yc2:target(764,480), dec:target(720,480),
+            yA:target(720,480), yB:target(720,480), cA:target(360,240), cB:target(360,240), out:target(720,480) };
+function srcTex(){
+  const t = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, t);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  return t;
+}
+const texA = srcTex(), texB = srcTex();
+
+function run(pr, dst, tex, uni){
+  gl.useProgram(pr.p);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, dst ? dst.f : null);
+  gl.viewport(0, 0, dst ? dst.w : canvas.width, dst ? dst.h : canvas.height);
+  let unit = 0;
+  for (const [name, t] of Object.entries(tex)){ gl.activeTexture(gl.TEXTURE0+unit); gl.bindTexture(gl.TEXTURE_2D, t); gl.uniform1i(pr.u[name], unit++); }
+  for (const [name, v] of Object.entries(uni)){
+    const loc = pr.u[name]; if (loc == null) continue;
+    if (Array.isArray(v)) gl.uniform2f(loc, v[0], v[1]);
+    else if (v && v.i !== undefined) gl.uniform1i(loc, v.i);
+    else gl.uniform1f(loc, v);
+  }
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+}
+const I = n => ({ i: n|0 });
+
+// ---------------------------------------------------------------- source pictures (640x480, 4:3)
+const SW = 640, SH = 480;
+const cvA = document.createElement("canvas"), cvB = document.createElement("canvas");
+cvA.width = cvB.width = SW; cvA.height = cvB.height = SH;
+const ctxA = cvA.getContext("2d", { willReadFrequently:true }), ctxB = cvB.getContext("2d", { willReadFrequently:true });
+
+function dropFrameTC(fn){
+  const d = Math.floor(fn/17982), m = fn % 17982;
+  fn += 18*d + (m > 2 ? 2*Math.floor((m-2)/1798) : 0);
+  const p = n => String(n).padStart(2,"0");
+  return p(Math.floor(fn/108000)%24)+":"+p(Math.floor(fn/1800)%60)+":"+p(Math.floor(fn/30)%60)+";"+p(fn%30);
+}
+
+function drawBars(c, t, frame){
+  const bw = SW/7, h1 = Math.round(SH*0.67), h2 = Math.round(SH*0.08);
+  const top = ["#bfbfbf","#bfbf00","#00bfbf","#00bf00","#bf00bf","#bf0000","#0000bf"];
+  const mid = ["#0000bf","#131313","#bf00bf","#131313","#00bfbf","#131313","#bfbfbf"];
+  top.forEach((col,i)=>{ c.fillStyle=col; c.fillRect(Math.round(i*bw),0,Math.ceil(bw)+1,h1); });
+  mid.forEach((col,i)=>{ c.fillStyle=col; c.fillRect(Math.round(i*bw),h1,Math.ceil(bw)+1,h2); });
+  const y3 = h1+h2, h3 = SH-y3, wb = bw*5/4;
+  const bot = [["#00214c",wb],["#ffffff",wb],["#32006a",wb],["#131313",bw*5-3*wb],["#000000",bw/3],["#131313",bw/3],["#1d1d1d",bw/3],["#131313",bw]];
+  let x = 0; for (const [col,w] of bot){ c.fillStyle=col; c.fillRect(Math.round(x),y3,Math.ceil(w)+1,h3); x+=w; }
+  c.fillStyle = "#000"; c.fillRect(392, 404, 236, 46);
+  c.fillStyle = "#fff"; c.font = "bold 30px 'Courier New', monospace"; c.textBaseline = "middle";
+  c.fillText(dropFrameTC(frame), 404, 428);
+}
+
+function drawGame(c, t){
+  const sky = c.createLinearGradient(0,0,0,300);
+  sky.addColorStop(0,"#0a1a5c"); sky.addColorStop(0.55,"#2f5fd8"); sky.addColorStop(1,"#f39a4a");
+  c.fillStyle = sky; c.fillRect(0,0,SW,300);
+  c.fillStyle = "#ffe14d"; c.beginPath(); c.arc(500,210,34,0,Math.PI*2); c.fill();
+  const hills = (base, amp, f, speed, col) => {
+    c.fillStyle = col; c.beginPath(); c.moveTo(0,300);
+    for (let x=0; x<=SW; x+=8) c.lineTo(x, base - amp*(0.6*Math.sin(x*f + t*speed) + 0.4*Math.sin(x*f*2.3 + t*speed*1.7 + 1)));
+    c.lineTo(SW,300); c.fill();
+  };
+  hills(250, 45, 0.011, 0.25, "#4a2f7a"); hills(285, 28, 0.02, 0.6, "#1f4d3a");
+  // perspective checker floor
+  const img = c.createImageData(SW, 180), d = img.data;
+  for (let y=0; y<180; y++){
+    const z = 900/(y+12); const row = Math.floor(z*0.25 + t*6);
+    for (let x=0; x<SW; x++){
+      const col = Math.floor((x-320)*z/600 + 100) + row;
+      const on = (col & 1) === 0; const i = (y*SW + x)*4;
+      const fade = Math.min(1, y/40);
+      d[i] = on ? 40 + 30*fade : 20; d[i+1] = on ? 140*fade + 40 : 90*fade + 30; d[i+2] = on ? 50 : 35; d[i+3] = 255;
+    }
+  }
+  c.putImageData(img, 0, 300);
+  // sprite
+  const sx = 320 + 230*Math.sin(t*1.3), sy = 330 - Math.abs(Math.sin(t*4.2))*70;
+  c.fillStyle = "#e01d1d"; c.fillRect(sx-18, sy-34, 36, 40);
+  c.fillStyle = "#ffd2a8"; c.fillRect(sx-14, sy-60, 28, 26);
+  c.fillStyle = "#e01d1d"; c.fillRect(sx-18, sy-66, 36, 10);
+  c.fillStyle = "#1d2fe0"; c.fillRect(sx-16, sy+6, 12, 18); c.fillRect(sx+4, sy+6, 12, 18);
+  c.fillStyle = "#000"; c.fillRect(sx-6, sy-52, 4, 6); c.fillRect(sx+4, sy-52, 4, 6);
+  // HUD
+  c.fillStyle = "#1030c0"; c.fillRect(0,0,SW,52);
+  c.fillStyle = "#ffffff"; c.fillRect(0,50,SW,2);
+  c.font = "bold 22px 'Courier New', monospace"; c.textBaseline = "middle";
+  c.fillStyle = "#ff2a2a"; c.fillText("LIFE", 28, 26);
+  for (let i=0;i<8;i++){ c.fillStyle = i<6 ? "#ff2a2a" : "#5a1010"; c.fillRect(96+i*14, 16, 10, 20); }
+  c.fillStyle = "#ffe14d"; c.fillText("1UP", 300, 26);
+  c.fillStyle = "#ffffff"; c.fillText("SCORE " + String(4250 + Math.floor(t*37)*10).padStart(6,"0"), 400, 26);
+  if (Math.floor(t*1.5) % 2 === 0){ c.fillStyle = "#ffffff"; c.font = "bold 26px 'Courier New', monospace"; c.textAlign="center"; c.fillText("PRESS START", 320, 448); c.textAlign="start"; }
+}
+
+let zonePlate = null;
+function drawRes(c, t){
+  c.fillStyle = "#404040"; c.fillRect(0,0,SW,SH);
+  const pxPerUs = SW/52.15, bands = [0.5,1.0,2.0,3.0,3.58,4.2];
+  const img = c.createImageData(SW, 130), d = img.data, bw = SW/bands.length;
+  for (let x=0;x<SW;x++){
+    const b = Math.min(bands.length-1, Math.floor(x/bw)); const f = bands[b]/pxPerUs;
+    const v = (x % bw) < 6 ? 0 : 128 + 110*Math.sin(2*Math.PI*f*x);
+    for (let y=0;y<130;y++){ const i=(y*SW+x)*4; d[i]=d[i+1]=d[i+2]=v; d[i+3]=255; }
+  }
+  c.putImageData(img, 0, 34);
+  c.fillStyle = "#fff"; c.font = "bold 16px 'Courier New', monospace"; c.textBaseline = "middle";
+  bands.forEach((b,i)=> c.fillText(b.toFixed(2)+" MHz", i*bw + 8, 17));
+  if (!zonePlate){
+    const R = 120; zonePlate = c.createImageData(2*R, 2*R);
+    for (let y=0;y<2*R;y++) for (let x=0;x<2*R;x++){
+      const dx=x-R+0.5, dy=y-R+0.5, r2=dx*dx+dy*dy, v = 128 + 120*Math.cos(Math.PI*r2/(2*R)), i=(y*2*R+x)*4;
+      zonePlate.data[i]=zonePlate.data[i+1]=zonePlate.data[i+2]=v; zonePlate.data[i+3]=255;
+    }
+  }
+  c.putImageData(zonePlate, 20, 180);
+  const sw = [["#ff2020","#1020d0","RED/BLUE"],["#ffff30","#ffffff","YEL/WHT"],["#20e0e0","#e020e0","CYN/MAG"],["#ffffff","#000000","WHT/BLK"]];
+  sw.forEach(([fg,bg,txt],i)=>{ const y = 182 + i*56; c.fillStyle=bg; c.fillRect(290,y,330,48); c.fillStyle=fg; c.font="bold 28px 'Courier New', monospace"; c.fillText(txt+" 0123", 304, y+25); });
+  const bx = 20 + ((t*120) % 560);
+  c.fillStyle = "#000"; c.fillRect(0, 420, SW, 60);
+  c.fillStyle = "#ffffff"; c.fillRect(bx, 424, 40, 52);
+  c.fillStyle = "#ff2020"; c.fillRect(bx+44, 424, 40, 52);
+}
+
+let fileImg = null, fileVid = null;
+function fitDraw(c, el, w, h){
+  c.fillStyle = "#000"; c.fillRect(0,0,SW,SH);
+  const s = Math.min(SW/w, SH/h), dw = w*s, dh = h*s;
+  c.drawImage(el, (SW-dw)/2, (SH-dh)/2, dw, dh);
+}
+let customSource = null; // test hook: fn(ctx, t, field, frame)
+function drawSources(frame){
+  const t = frame/29.97, t2 = t + 1/59.94;
+  if (customSource){ customSource(ctxA, t, 0, frame); customSource(ctxB, t2, 1, frame); }
+  else if (P.source === "file" && fileVid && fileVid.readyState >= 2){
+    ctxA.drawImage(cvB, 0, 0); fitDraw(ctxB, fileVid, fileVid.videoWidth, fileVid.videoHeight);
+  } else if (P.source === "file" && fileImg){
+    fitDraw(ctxA, fileImg, fileImg.naturalWidth, fileImg.naturalHeight); ctxB.drawImage(cvA, 0, 0);
+  } else {
+    const fn = P.source === "bars" ? drawBars : P.source === "res" ? drawRes : drawGame;
+    fn(ctxA, t, frame); fn(ctxB, t2, frame);
+  }
+  gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+  for (const [tex, cv] of [[texA, cvA],[texB, cvB]]){ gl.bindTexture(gl.TEXTURE_2D, tex); gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, cv); }
+}
+
+// ---------------------------------------------------------------- pipeline
+let frame = 0;
+const sig = mhz => Math.max(0.6, MHZ/mhz);
+function process(){
+  const t = frame/29.97, rad = Math.PI/180;
+  const setupEnc = P.levels === 2 ? 0.0 : 0.075, setupDec = P.levels === 1 ? 0.0 : 0.075;
+  run(PR.src, T.src, { uA:texA, uB:texB }, {});
+  run(PR.enc, T.comp, { uSrc:T.src.t }, { uFrame:I(frame), uTime:t, uNoise:P.noise, uJitter:P.jitter, uHum:P.hum, uBeat:P.beat,
+      uHue:P.hue*rad, uSetup:setupEnc, uSigY:MHZ/4.2, uSigI:MHZ/1.3, uSigQ:MHZ/0.5 });
+  run(PR.yc1, T.yc1, { uComp:T.comp.t }, { uMode:I(P.ycMode) });
+  run(PR.yc2, T.yc2, { uT:T.yc1.t }, { uSigB: P.ycMode === 0 ? sig(P.ycMHz) : 0 }); // band width only shapes the notch
+  run(PR.dem, T.dec, { uYC:T.yc2.t }, { uFrame:I(frame), uSigD:sig(P.chromaMHz), uPeak:P.peak, uSat:P.sat, uTint:-P.tint*rad, uSetupDec:setupDec });
+  run(PR.toy, T.yA, { uT:T.dec.t }, {});
+  run(PR.toc, T.cA, { uT:T.dec.t }, {});
+  const q = qEff();
+  if (P.mpeg){
+    for (const [a, b] of [[T.yA, T.yB],[T.cA, T.cB]]){
+      run(PR.dct, b, { uT:a.t }, { uDir:I(0), uInv:I(0), uQuant:I(0), uQ:q });
+      run(PR.dct, a, { uT:b.t }, { uDir:I(1), uInv:I(0), uQuant:I(1), uQ:q });
+      run(PR.dct, b, { uT:a.t }, { uDir:I(1), uInv:I(1), uQuant:I(0), uQ:q });
+      run(PR.dct, a, { uT:b.t }, { uDir:I(0), uInv:I(1), uQuant:I(0), uQ:q });
+    }
+  }
+  run(PR.out, T.out, { uY:T.yA.t, uC:T.cA.t }, { uCUE:I(P.cue?1:0), uDeint:I(P.deint), uFrame:I(frame) });
+}
+function qEff(){ return P.q*(1 + P.pump*0.7*((frame % 15)/14)); }
+const VIEWS = { source:[T.src,0], composite:[T.comp,1], luma:[T.yc2,2], chroma:[T.yc2,3], decoded:[T.dec,0], final:[T.out,0] };
+function present(){
+  const [tex, kind] = VIEWS[P.view];
+  run(PR.pre, null, { uT:tex.t, uRef:T.src.t }, { uKind:I(kind), uOver:P.overscan, uSplit:P.wipe ? P.split : -1, uCanvas:[canvas.width, canvas.height], uOrigin:[0, 0] });
+  document.getElementById("tc").textContent = dropFrameTC(frame);
+  document.getElementById("qread").innerHTML = P.mpeg ? "q <b>" + qEff().toFixed(1) + "</b> · GOP " + (frame % 15 === 0 ? "I" : "P" ) : "MPEG <b>off</b>";
+}
+function step(){ frame++; drawSources(frame); process(); present(); }
+function refresh(){ drawSources(frame); process(); present(); }
+
+// ---------------------------------------------------------------- UI
+function setPressed(sel, attr, val){ document.querySelectorAll(sel).forEach(b => b.setAttribute("aria-pressed", String(b.dataset[attr] === val))); }
+const ctlEls = {};
+for (const [secId, list] of Object.entries(CONTROLS)){
+  const sec = document.getElementById(secId);
+  for (const c of list){
+    if (c.seg){
+      const g = document.createElement("div"); g.className = "seg"; g.setAttribute("role","group");
+      c.seg.forEach((name,i)=>{ const b=document.createElement("button"); b.className="chip"; b.textContent=name; b.id=c.k+"-"+i;
+        b.onclick=()=>{ P[c.k]=i; clearPreset(); syncUI(); if (P.paused) refresh(); }; g.appendChild(b); });
+      sec.appendChild(g); ctlEls[c.k] = { c, g };
+    } else if (c.toggle){
+      const l = document.createElement("label"); l.className="toggle";
+      l.innerHTML = `<span>${c.toggle}</span><input type="checkbox" id="${c.k}">`;
+      const inp = l.querySelector("input"); inp.onchange = () => { P[c.k] = inp.checked; clearPreset(); syncUI(); if (P.paused) refresh(); };
+      sec.appendChild(l); ctlEls[c.k] = { c, inp };
+    } else {
+      const d = document.createElement("div"); d.className = "ctl";
+      d.innerHTML = `<label for="${c.k}">${c.label}</label><output id="${c.k}-o"></output><input type="range" id="${c.k}" min="${c.min}" max="${c.max}" step="${c.step}">`;
+      const inp = d.querySelector("input"), out = d.querySelector("output");
+      inp.oninput = () => { P[c.k] = parseFloat(inp.value); out.textContent = c.fmt(P[c.k]); clearPreset(); if (P.paused) refresh(); };
+      sec.appendChild(d); ctlEls[c.k] = { c, inp, out };
+    }
+  }
+}
+const presetRow = document.getElementById("presets");
+for (const name of Object.keys(PRESETS)){
+  const b = document.createElement("button"); b.className="chip"; b.textContent=name; b.dataset.preset=name;
+  b.onclick = () => { Object.assign(P, PRESETS[name]); syncUI(); setPressed("[data-preset]","preset",name); if (P.paused) refresh(); };
+  presetRow.appendChild(b);
+}
+function clearPreset(){ setPressed("[data-preset]","preset",""); }
+function syncUI(){
+  for (const { c, g, inp, out } of Object.values(ctlEls)){
+    if (g) [...g.children].forEach((b,i)=>b.setAttribute("aria-pressed", String(P[c.k]===i)));
+    else if (c.toggle) inp.checked = !!P[c.k];
+    else { inp.value = P[c.k]; out.textContent = c.fmt(P[c.k]); }
+  }
+  setPressed("[data-view]","view",P.view);
+  setPressed("[data-src]","src",P.source);
+}
+setPressed("[data-preset]","preset","Bt878 PCI tuner");
+document.querySelectorAll("[data-view]").forEach(b => b.onclick = () => { P.view = b.dataset.view; syncUI(); present(); });
+const fileIn = document.getElementById("file");
+document.querySelectorAll("[data-src]").forEach(b => b.onclick = () => {
+  if (b.dataset.src === "file"){ fileIn.click(); return; }
+  P.source = b.dataset.src; syncUI(); if (P.paused) refresh();
+});
+fileIn.onchange = () => {
+  const f = fileIn.files[0]; if (!f) return;
+  const url = URL.createObjectURL(f);
+  if (fileVid){ fileVid.pause(); fileVid = null; } fileImg = null;
+  if (f.type.startsWith("video/")){
+    fileVid = document.createElement("video"); fileVid.muted = true; fileVid.loop = true; fileVid.playsInline = true; fileVid.src = url; fileVid.play().catch(()=>{});
+  } else { fileImg = new Image(); fileImg.onload = () => { if (P.paused) refresh(); }; fileImg.src = url; }
+  P.source = "file"; syncUI();
+};
+const wipeBtn = document.getElementById("wipe");
+wipeBtn.onclick = () => { P.wipe = !P.wipe; wipeBtn.setAttribute("aria-pressed", String(P.wipe)); document.getElementById("wipenote").hidden = !P.wipe; present(); };
+const screen = document.getElementById("screen");
+function wipeMove(e){ if (!P.wipe) return; const r = screen.getBoundingClientRect(); P.split = Math.min(1, Math.max(0, (e.clientX - r.left)/r.width)); present(); }
+screen.addEventListener("pointerdown", e => { if (!P.wipe) return; screen.setPointerCapture(e.pointerId); wipeMove(e); });
+screen.addEventListener("pointermove", e => { if (e.buttons) wipeMove(e); });
+const pauseBtn = document.getElementById("pause");
+pauseBtn.onclick = () => { P.paused = !P.paused; pauseBtn.setAttribute("aria-pressed", String(P.paused)); pauseBtn.textContent = P.paused ? "Play" : "Pause"; document.getElementById("readout").classList.toggle("paused", P.paused); };
+document.getElementById("stepb").onclick = () => { if (!P.paused) pauseBtn.onclick(); step(); };
+syncUI();
+
+// ---------------------------------------------------------------- loop
+const FD = 1000/29.97; let last = performance.now(), acc = 0, fpsN = 0, fpsT = last;
+let auto = !/[?&]noauto/.test(location.search);
+function tick(now){
+  requestAnimationFrame(tick);
+  if (!auto) return;
+  const dt = now - last; last = now;
+  if (P.paused) return;
+  acc += dt; if (acc > 250) acc = FD;
+  if (acc >= FD){ acc -= FD; step(); fpsN++; }
+  if (now - fpsT > 1000){ document.getElementById("fps").textContent = (fpsN*1000/(now-fpsT)).toFixed(1) + " fps"; fpsN = 0; fpsT = now; }
+}
+step(); requestAnimationFrame(tick);
+
+// ---------------------------------------------------------------- test hook
+window.CAP = {
+  P, PRESETS, format: FMT.name,
+  set(o){ Object.assign(P, o); syncUI(); },
+  stop(){ auto = false; },
+  setSource(fn){ customSource = fn; },
+  goto(n){ frame = n; refresh(); },
+  step(n=1){ for (let i=0;i<n;i++) step(); gl.finish(); },
+  get frame(){ return frame; },
+  read(name){
+    const map = { source:T.src, composite:T.comp, yc:T.yc2, decoded:T.dec, luma:T.yA, chroma:T.cA, final:T.out };
+    const tg = map[name]; gl.bindFramebuffer(gl.FRAMEBUFFER, tg.f);
+    const data = new Float32Array(tg.w*tg.h*4); gl.readPixels(0,0,tg.w,tg.h,gl.RGBA,gl.FLOAT,data);
+    return { w:tg.w, h:tg.h, data };
+  },
+  glError(){ return gl.getError(); },
+};
+</script>
