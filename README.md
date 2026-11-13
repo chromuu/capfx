@@ -1,5 +1,3 @@
----
-
 # capfx: composite capture '05
 
 Plays video or images through a simulation of a 2005-era composite capture card and saves the result
