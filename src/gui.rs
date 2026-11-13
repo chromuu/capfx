@@ -1,6 +1,7 @@
 //! Desktop GUI: a player with every control on screen, snapshots, real-time recording and whole-file export.
 //! The filter runs on a worker thread so the interface stays responsive on slow machines.
 
+use crate::audio::{Audio, Volume};
 use crate::ffmpeg::{self, Encoder};
 use crate::job::{self, Fields, FpsMeter, RenderOpts};
 use crate::{present, Deint, Levels, Params, Pipeline, View, YcMode, CAP_H, CAP_W};
@@ -13,7 +14,7 @@ use std::time::{Duration, Instant};
 // ------------------------------------------------------------------ worker
 
 enum Cmd {
-    Open(String), Params(Params), Playing(bool), Step, Loop(bool), Seek(f64), Wipe(Option<f32>),
+    Open(String), Params(Params), Playing(bool), Step, Loop(bool), Seek(f64), Scrub(f64), Wipe(Option<f32>),
     Snapshot(String), Record(Option<String>),
 }
 
@@ -30,13 +31,15 @@ struct Shared {
 }
 
 #[derive(Clone)]
-struct MediaInfo { path: String, name: String, width: u32, height: u32, fps: f64, duration: Option<f64>, image: bool }
+struct MediaInfo { path: String, name: String, width: u32, height: u32, fps: f64, duration: Option<f64>, image: bool, has_audio: bool }
 
 struct Worker {
     rx: Receiver<Cmd>, shared: Arc<Mutex<Shared>>, ctx: egui::Context,
     params: Params, pl: Pipeline, playing: bool, loop_input: bool, wipe: Option<f32>,
     media: Option<MediaInfo>, fields: Option<Fields>, still: Option<Vec<u8>>, start: f64,
     rec: Option<(Encoder, String, Instant)>, meter: FpsMeter, next_tick: Instant,
+    /// Playing sound and the frame number it started at; while it plays it is the clock the picture follows.
+    audio: Option<(Audio, u32)>, volume: Volume, audio_failed: bool,
 }
 
 impl Worker {
@@ -44,6 +47,7 @@ impl Worker {
 
     fn open(&mut self, path: String, start: f64) {
         self.stop_recording();
+        self.audio = None;
         self.fields = None; self.still = None; self.media = None;
         let probe = match ffmpeg::check_tools().and_then(|_| ffmpeg::probe(&path)) { Ok(p) => p, Err(e) => { self.say(format!("Can't open: {e}")); return; } };
         let image = job::is_image(&path, &probe);
@@ -53,7 +57,7 @@ impl Worker {
         } else {
             match Fields::open(&path, &probe, start, self.loop_input) { Ok(f) => self.fields = Some(f), Err(e) => { self.say(format!("Can't open: {e}")); return; } }
         }
-        let info = MediaInfo { path: path.clone(), name, width: probe.width, height: probe.height, fps: probe.fps, duration: probe.duration, image };
+        let info = MediaInfo { path: path.clone(), name, width: probe.width, height: probe.height, fps: probe.fps, duration: probe.duration, image, has_audio: probe.has_audio && !image };
         self.media = Some(info.clone());
         self.start = start;
         self.pl = Pipeline::new();
@@ -113,10 +117,11 @@ impl Worker {
                     Ok(cmd) => match cmd {
                         Cmd::Open(p) => self.open(p, 0.0),
                         Cmd::Params(p) => { let reprocess = !self.playing; self.params = p; if reprocess && self.pl.frame > 0 { self.reprocess(); } }
-                        Cmd::Playing(b) => { if b && self.shared.lock().unwrap().ended { if let Some(m) = self.media.clone() { self.open(m.path, 0.0); } } self.playing = b; self.next_tick = Instant::now(); }
-                        Cmd::Step => { self.playing = false; self.step(); }
+                        Cmd::Playing(b) => { if !b { self.audio = None; } if b && self.shared.lock().unwrap().ended { if let Some(m) = self.media.clone() { self.open(m.path, 0.0); } } self.playing = b; self.next_tick = Instant::now(); }
+                        Cmd::Step => { self.playing = false; self.audio = None; self.step(); }
                         Cmd::Loop(b) => { self.loop_input = b; if let Some(m) = self.media.clone() { if !m.image { let pos = self.shared.lock().unwrap().position; self.open(m.path, pos); } } }
                         Cmd::Seek(t) => { if let Some(m) = self.media.clone() { if !m.image { let was = self.playing; self.open(m.path, t); self.playing = was; } } }
+                        Cmd::Scrub(t) => { if let Some(m) = self.media.clone() { if !m.image { self.open(m.path, t); self.playing = false; } } }
                         Cmd::Wipe(w) => { self.wipe = w; self.publish(); }
                         Cmd::Snapshot(path) => {
                             let rgb = present::render(&self.pl, self.params.view, self.params.overscan, self.wipe, CAP_W, CAP_H);
@@ -133,6 +138,20 @@ impl Worker {
                 }
             }
             if self.playing && self.media.is_some() {
+                self.ensure_audio();
+                if let Some((a, base)) = &self.audio {
+                    if a.finished() { self.audio = None; self.next_tick = Instant::now(); continue; }
+                    // Audio is the clock: catch up by skipping frames through the filter, wait when ahead.
+                    let due = *base + (a.played() * 29.97) as u32;
+                    if self.pl.frame >= due { std::thread::sleep(Duration::from_millis(3)); continue; }
+                    let mut skip = (due - self.pl.frame - 1).min(15);
+                    while skip > 0 {
+                        match self.fields.as_mut().map(|f| f.advance()) { Some(Ok(true)) => self.pl.frame += 1, _ => break }
+                        skip -= 1;
+                    }
+                    self.step();
+                    continue;
+                }
                 let now = Instant::now();
                 if now >= self.next_tick {
                     self.step();
@@ -144,6 +163,17 @@ impl Worker {
             } else {
                 std::thread::sleep(Duration::from_millis(5));
             }
+        }
+    }
+
+    /// Starts sound at the current position if the file has some and it isn't already playing.
+    fn ensure_audio(&mut self) {
+        if self.audio.is_some() || self.audio_failed || self.fields.is_none() { return; }
+        let Some(m) = self.media.clone().filter(|m| m.has_audio) else { return };
+        let pos = self.shared.lock().unwrap().position;
+        match Audio::open(&m.path, pos, self.loop_input, self.volume.clone()) {
+            Ok(a) => self.audio = Some((a, self.pl.frame)),
+            Err(e) => { self.audio_failed = true; self.say(format!("No sound: {e}")); }
         }
     }
 
@@ -185,6 +215,7 @@ pub struct App {
     path_box: String, seek: f64, seeking: bool,
     export: Option<Export>, export_out: String, export_start: String, export_dur: String, export_size: usize, export_crf: u32, export_audio: bool,
     toasts: Vec<(Instant, String)>,
+    volume: Volume, vol: f32, muted: bool, last_scrub: Instant,
 }
 
 const PRESET_NAMES: [&str; 4] = ["Bt878 PCI tuner", "Hardware MPEG-2", "USB 2.0 dongle", "Clean reference"];
@@ -195,12 +226,14 @@ impl App {
         let (tx, rx) = channel();
         let shared = Arc::new(Mutex::new(Shared::default()));
         let params = Params::BT878;
-        let worker = Worker { rx, shared: shared.clone(), ctx: cc.egui_ctx.clone(), params: params.clone(), pl: Pipeline::new(), playing: false,
-            loop_input: true, wipe: None, media: None, fields: None, still: None, start: 0.0, rec: None, meter: FpsMeter::default(), next_tick: Instant::now() };
-        std::thread::Builder::new().name("capfx-worker".into()).spawn(move || worker.run()).expect("worker thread");
+        let volume = Volume::new(0.8);
+        let (ctx, sh, pr, vol) = (cc.egui_ctx.clone(), shared.clone(), params.clone(), volume.clone());
+        // the worker is built on its own thread: the audio stream it owns can't move between threads
+        std::thread::Builder::new().name("capfx-worker".into()).spawn(move || { let worker = Worker { rx, shared: sh, ctx, params: pr, pl: Pipeline::new(), playing: false,
+            loop_input: true, wipe: None, media: None, fields: None, still: None, start: 0.0, rec: None, meter: FpsMeter::default(), next_tick: Instant::now(), audio: None, volume: vol, audio_failed: false }; worker.run() }).expect("worker thread");
         let mut app = App { tx, shared, params, preset: Some(0), playing: true, loop_input: true, wipe: false, split: 0.5, tex: None, last_frame_no: 0,
             path_box: String::new(), seek: 0.0, seeking: false, export: None, export_out: String::new(), export_start: "0".into(), export_dur: String::new(),
-            export_size: 0, export_crf: 18, export_audio: true, toasts: Vec::new() };
+            export_size: 0, export_crf: 18, export_audio: true, toasts: Vec::new(), volume, vol: 0.8, muted: false, last_scrub: Instant::now() };
         let _ = app.tx.send(Cmd::Loop(true));
         if let Some(p) = initial { app.open(p); }
         app
@@ -218,11 +251,61 @@ impl App {
 
     fn toast(&mut self, s: impl Into<String>) { self.toasts.push((Instant::now(), s.into())); }
 
+    fn apply_volume(&self) { self.volume.set(if self.muted { 0.0 } else { self.vol }); }
+
+    /// Seek while dragging: shows the frame under the cursor, throttled since every seek restarts the decoder.
+    fn scrub(&mut self, t: f64) {
+        self.seek = t;
+        if self.last_scrub.elapsed() > Duration::from_millis(150) { self.last_scrub = Instant::now(); let _ = self.tx.send(Cmd::Scrub(t)); }
+    }
+
+    /// Final seek when a drag or click ends; playback resumes if it was playing.
+    fn seek_to(&mut self, t: f64) {
+        self.seek = t; self.seeking = false;
+        let _ = self.tx.send(Cmd::Seek(t));
+        let _ = self.tx.send(Cmd::Playing(self.playing));
+    }
+
     fn pick_file(&mut self) {
         let f = rfd::FileDialog::new()
             .add_filter("Video and images", &["mp4", "mkv", "mov", "avi", "webm", "m4v", "mpg", "mpeg", "ts", "wmv", "flv", "gif", "png", "jpg", "jpeg", "bmp", "webp"])
             .add_filter("All files", &["*"]).pick_file();
         if let Some(p) = f { self.open(p.to_string_lossy().into_owned()); }
+    }
+}
+
+impl App {
+    /// A seek bar drawn over the bottom of the picture: shown while the pointer is over the picture or when paused;
+    /// hover for the time under the cursor, click or drag to seek.
+    fn timeline_overlay(&mut self, ui: &mut egui::Ui, pic: egui::Rect, media: Option<&MediaInfo>, position: f64) {
+        let Some(dur) = media.filter(|m| !m.image).and_then(|m| m.duration).filter(|d| *d > 0.0) else { return };
+        let hit = egui::Rect::from_min_max(egui::pos2(pic.left() + 16.0, pic.bottom() - 34.0), egui::pos2(pic.right() - 16.0, pic.bottom() - 6.0));
+        let resp = ui.interact(hit, ui.id().with("timeline"), egui::Sense::click_and_drag());
+        let over_pic = ui.rect_contains_pointer(pic);
+        if !(over_pic || !self.playing || resp.dragged() || self.seeking) { return; }
+        let t_at = |x: f32| (((x - hit.left()) / hit.width()).clamp(0.0, 1.0) as f64) * dur;
+        if let Some(p) = resp.interact_pointer_pos() {
+            if resp.drag_started() || resp.dragged() { self.seeking = true; self.scrub(t_at(p.x)); }
+        }
+        if resp.drag_stopped() || resp.clicked() { if let Some(p) = resp.interact_pointer_pos() { self.seek_to(t_at(p.x)); } }
+
+        let shown = if self.seeking { self.seek } else { position };
+        let active = resp.hovered() || resp.dragged();
+        let h = if active { 8.0 } else { 4.0 };
+        let y = hit.bottom() - 10.0;
+        let track = egui::Rect::from_min_max(egui::pos2(hit.left(), y - h / 2.0), egui::pos2(hit.right(), y + h / 2.0));
+        let painter = ui.painter_at(pic);
+        painter.rect_filled(egui::Rect::from_min_max(egui::pos2(pic.left(), pic.bottom() - 48.0), pic.max), 0.0, egui::Color32::from_black_alpha(110));
+        painter.rect_filled(track, h / 2.0, egui::Color32::from_white_alpha(70));
+        let fx = track.left() + track.width() * (shown / dur).clamp(0.0, 1.0) as f32;
+        painter.rect_filled(egui::Rect::from_min_max(track.min, egui::pos2(fx, track.bottom())), h / 2.0, egui::Color32::from_rgb(230, 80, 80));
+        if active { painter.circle_filled(egui::pos2(fx, y), 7.0, egui::Color32::WHITE); }
+        painter.text(egui::pos2(hit.left(), track.top() - 6.0), egui::Align2::LEFT_BOTTOM, format!("{} / {}", hms(shown), hms(dur)), egui::FontId::monospace(12.0), egui::Color32::WHITE);
+        if let Some(hp) = resp.hover_pos().filter(|_| !resp.dragged()) {
+            painter.text(egui::pos2(hp.x, track.top() - 6.0), egui::Align2::CENTER_BOTTOM, hms(t_at(hp.x)), egui::FontId::monospace(12.0), egui::Color32::YELLOW);
+        }
+        if active { ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand); }
+        if over_pic { ui.ctx().request_repaint_after(Duration::from_millis(100)); }
     }
 }
 
@@ -255,8 +338,16 @@ impl eframe::App for App {
                 if i.key_pressed(egui::Key::Period) { self.playing = false; let _ = self.tx.send(Cmd::Step); }
                 if i.key_pressed(egui::Key::S) { let _ = self.tx.send(Cmd::Snapshot(job::stamped("png"))); }
                 if i.key_pressed(egui::Key::R) { let _ = self.tx.send(Cmd::Record(if recording.is_some() { None } else { Some(job::stamped("mp4")) })); }
-                if i.key_pressed(egui::Key::O) { /* handled below: needs &mut self outside the closure */ }
             });
+            let (left, right, mute, up, down) = ctx.input(|i| (i.key_pressed(egui::Key::ArrowLeft), i.key_pressed(egui::Key::ArrowRight), i.key_pressed(egui::Key::M), i.key_pressed(egui::Key::ArrowUp), i.key_pressed(egui::Key::ArrowDown)));
+            if let Some(d) = media.as_ref().filter(|m| !m.image).and_then(|m| m.duration) {
+                if left { self.seek_to((position - 5.0).max(0.0)); }
+                if right { self.seek_to((position + 5.0).min(d)); }
+            }
+            if mute { self.muted = !self.muted; }
+            if up { self.vol = (self.vol + 0.1).min(1.0); self.muted = false; }
+            if down { self.vol = (self.vol - 0.1).max(0.0); }
+            if mute || up || down { self.apply_volume(); }
             if ctx.input(|i| i.key_pressed(egui::Key::O)) { self.pick_file(); }
         }
 
@@ -390,7 +481,7 @@ impl eframe::App for App {
                     }
                 }
                 ui.add_space(10.0);
-                ui.small("Keys: space play/pause · . step · S snapshot · R record · O open");
+                ui.small("Keys: space play/pause · . step · ←/→ seek 5 s · M mute · ↑/↓ volume · S snapshot · R record · O open");
             });
         });
         if params_changed { self.send_params(); }
@@ -410,9 +501,15 @@ impl eframe::App for App {
                 ui.label(egui::RichText::new(hms(position)).monospace());
                 let r = ui.add_enabled(seekable, egui::Slider::new(&mut self.seek, 0.0..=dur.max(0.1)).show_value(false));
                 if r.drag_started() { self.seeking = true; }
-                if r.drag_stopped() { self.seeking = false; let _ = self.tx.send(Cmd::Seek(self.seek)); }
-                if r.changed() && !r.dragged() { let _ = self.tx.send(Cmd::Seek(self.seek)); }
+                if r.dragged() && r.changed() { let t = self.seek; self.scrub(t); }
+                if r.drag_stopped() { let t = self.seek; self.seek_to(t); }
+                else if r.changed() && !r.dragged() { let t = self.seek; self.seek_to(t); }
                 if seekable { ui.label(egui::RichText::new(hms(dur)).monospace()); }
+                ui.separator();
+                let has_audio = media.as_ref().is_some_and(|m| m.has_audio);
+                let icon = if self.muted || self.vol == 0.0 { "🔇" } else if self.vol < 0.5 { "🔉" } else { "🔊" };
+                if ui.add_enabled(has_audio, egui::Button::new(icon).min_size([28.0, 24.0].into())).on_hover_text("Mute (M)").clicked() { self.muted = !self.muted; self.apply_volume(); }
+                if ui.add_enabled(has_audio, egui::Slider::new(&mut self.vol, 0.0..=1.0).show_value(false)).on_hover_text(format!("Volume {:.0}%  (↑/↓)", self.vol * 100.0)).changed() { self.muted = false; self.apply_volume(); }
                 ui.separator();
                 if ui.checkbox(&mut self.wipe, "A/B wipe").changed() { let _ = self.tx.send(Cmd::Wipe(if self.wipe { Some(self.split) } else { None })); }
                 if self.wipe && ui.add(egui::Slider::new(&mut self.split, 0.0..=1.0).show_value(false)).changed() { let _ = self.tx.send(Cmd::Wipe(Some(self.split))); }
@@ -434,7 +531,8 @@ impl eframe::App for App {
             match &self.tex {
                 Some(t) => {
                     let img = egui::Image::from_texture(egui::load::SizedTexture::new(t.id(), egui::vec2(640.0, 480.0))).maintain_aspect_ratio(true).fit_to_exact_size(avail);
-                    ui.centered_and_justified(|ui| ui.add(img));
+                    let pic = ui.centered_and_justified(|ui| ui.add(img)).inner.rect;
+                    self.timeline_overlay(ui, pic, media.as_ref(), position);
                 }
                 None => { ui.centered_and_justified(|ui| ui.label(egui::RichText::new("Open a video or image, or drop one here").color(egui::Color32::GRAY).size(18.0))); }
             }

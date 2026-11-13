@@ -10,6 +10,7 @@
 use rayon::prelude::*;
 use std::f32::consts::PI;
 
+pub mod audio;
 pub mod ffmpeg;
 pub mod gui;
 pub mod job;
