@@ -215,7 +215,7 @@ pub struct App {
     path_box: String, seek: f64, seeking: bool,
     export: Option<Export>, export_out: String, export_start: String, export_dur: String, export_size: usize, export_crf: u32, export_audio: bool,
     toasts: Vec<(Instant, String)>,
-    volume: Volume, vol: f32, muted: bool, last_scrub: Instant,
+    volume: Volume, vol: f32, muted: bool, last_scrub: Instant, fullscreen: bool,
 }
 
 const PRESET_NAMES: [&str; 4] = ["Bt878 PCI tuner", "Hardware MPEG-2", "USB 2.0 dongle", "Clean reference"];
@@ -233,7 +233,7 @@ impl App {
             loop_input: true, wipe: None, media: None, fields: None, still: None, start: 0.0, rec: None, meter: FpsMeter::default(), next_tick: Instant::now(), audio: None, volume: vol, audio_failed: false }; worker.run() }).expect("worker thread");
         let mut app = App { tx, shared, params, preset: Some(0), playing: true, loop_input: true, wipe: false, split: 0.5, tex: None, last_frame_no: 0,
             path_box: String::new(), seek: 0.0, seeking: false, export: None, export_out: String::new(), export_start: "0".into(), export_dur: String::new(),
-            export_size: 0, export_crf: 18, export_audio: true, toasts: Vec::new(), volume, vol: 0.8, muted: false, last_scrub: Instant::now() };
+            export_size: 0, export_crf: 18, export_audio: true, toasts: Vec::new(), volume, vol: 0.8, muted: false, last_scrub: Instant::now(), fullscreen: false };
         let _ = app.tx.send(Cmd::Loop(true));
         if let Some(p) = initial { app.open(p); }
         app
@@ -250,6 +250,11 @@ impl App {
     fn send_params(&mut self) { let _ = self.tx.send(Cmd::Params(self.params.clone())); }
 
     fn toast(&mut self, s: impl Into<String>) { self.toasts.push((Instant::now(), s.into())); }
+
+    fn set_fullscreen(&mut self, ctx: &egui::Context, on: bool) {
+        self.fullscreen = on;
+        ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(on));
+    }
 
     fn apply_volume(&self) { self.volume.set(if self.muted { 0.0 } else { self.vol }); }
 
@@ -344,6 +349,9 @@ impl eframe::App for App {
                 if left { self.seek_to((position - 5.0).max(0.0)); }
                 if right { self.seek_to((position + 5.0).min(d)); }
             }
+            let (f, esc) = ctx.input(|i| (i.key_pressed(egui::Key::F), i.key_pressed(egui::Key::Escape)));
+            if f { let on = !self.fullscreen; self.set_fullscreen(ctx, on); }
+            if esc && self.fullscreen { self.set_fullscreen(ctx, false); }
             if mute { self.muted = !self.muted; }
             if up { self.vol = (self.vol + 0.1).min(1.0); self.muted = false; }
             if down { self.vol = (self.vol - 0.1).max(0.0); }
@@ -353,7 +361,7 @@ impl eframe::App for App {
 
         // ---- right panel: controls
         let mut params_changed = false;
-        egui::SidePanel::right("controls").min_width(300.0).default_width(330.0).show(ctx, |ui| {
+        egui::SidePanel::right("controls").min_width(300.0).default_width(330.0).show_animated(ctx, !self.fullscreen, |ui| {
             egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
                 ui.add_space(6.0);
                 ui.horizontal(|ui| {
@@ -481,13 +489,13 @@ impl eframe::App for App {
                     }
                 }
                 ui.add_space(10.0);
-                ui.small("Keys: space play/pause · . step · ←/→ seek 5 s · M mute · ↑/↓ volume · S snapshot · R record · O open");
+                ui.small("Keys: space play/pause · . step · ←/→ seek 5 s · M mute · F fullscreen · ↑/↓ volume · S snapshot · R record · O open");
             });
         });
         if params_changed { self.send_params(); }
 
         // ---- bottom: transport
-        egui::TopBottomPanel::bottom("transport").show(ctx, |ui| {
+        egui::TopBottomPanel::bottom("transport").show_animated(ctx, !self.fullscreen, |ui| {
             ui.add_space(4.0);
             ui.horizontal(|ui| {
                 let has = media.is_some();
@@ -513,6 +521,9 @@ impl eframe::App for App {
                 ui.separator();
                 if ui.checkbox(&mut self.wipe, "A/B wipe").changed() { let _ = self.tx.send(Cmd::Wipe(if self.wipe { Some(self.split) } else { None })); }
                 if self.wipe && ui.add(egui::Slider::new(&mut self.split, 0.0..=1.0).show_value(false)).changed() { let _ = self.tx.send(Cmd::Wipe(Some(self.split))); }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.button("⛶").on_hover_text("Fullscreen (F, or double-click the picture)").clicked() { self.set_fullscreen(ctx, true); }
+                });
             });
             ui.horizontal(|ui| {
                 let status = match &media {
@@ -531,7 +542,17 @@ impl eframe::App for App {
             match &self.tex {
                 Some(t) => {
                     let img = egui::Image::from_texture(egui::load::SizedTexture::new(t.id(), egui::vec2(640.0, 480.0))).maintain_aspect_ratio(true).fit_to_exact_size(avail);
-                    let pic = ui.centered_and_justified(|ui| ui.add(img)).inner.rect;
+                    let cell = ui.centered_and_justified(|ui| ui.add(img)).inner.rect;
+                    // the cell is the whole panel; the picture is the 4:3 area centred in it
+                    let pic = egui::Rect::from_center_size(cell.center(), if cell.width() * 3.0 > cell.height() * 4.0 { egui::vec2(cell.height() * 4.0 / 3.0, cell.height()) } else { egui::vec2(cell.width(), cell.width() * 0.75) });
+                    // registered before the timeline so the timeline wins where they overlap
+                    let pr = ui.interact(pic, ui.id().with("picture"), egui::Sense::click());
+                    if pr.double_clicked() {
+                        // the first click of the double already toggled pause in fullscreen; undo it
+                        if self.fullscreen && media.is_some() { self.playing = !self.playing; let _ = self.tx.send(Cmd::Playing(self.playing)); }
+                        let on = !self.fullscreen; self.set_fullscreen(ctx, on);
+                    }
+                    else if pr.clicked() && self.fullscreen && media.is_some() { self.playing = !self.playing; let _ = self.tx.send(Cmd::Playing(self.playing)); }
                     self.timeline_overlay(ui, pic, media.as_ref(), position);
                 }
                 None => { ui.centered_and_justified(|ui| ui.label(egui::RichText::new("Open a video or image, or drop one here").color(egui::Color32::GRAY).size(18.0))); }
