@@ -51,7 +51,8 @@ Saving: **Snapshot PNG** writes what's on screen at 720×480; **Record MP4** rec
 time until you stop it; **Export whole file** re-processes the file from the start (or from a start time, for
 a duration) at a chosen size and quality with the source audio, in the background with a progress bar. The
 same keys as the bare player work here: `space`, `.`, `S`, `R`, and `O` to open; plus `←` `→` to seek 5 s,
-`↑` `↓` for volume and `M` to mute.
+`↑` `↓` for volume, `M` to mute, and `F` (or double-click the picture) for fullscreen, where only the
+picture and its timeline show; click to pause, `esc` to leave.
 
 ### Bare player keys (`capfx play`)
 
